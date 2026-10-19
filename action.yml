@@ -1,0 +1,85 @@
+name: 'Cloudways API (Access Token)'
+description: 'Call any Cloudways API endpoint from GitHub Actions using a Cloudways Access Token.'
+author: 'titas-uddin'
+branding:
+  icon: 'cloud'
+  color: 'blue'
+
+inputs:
+  access-token:
+    description: 'Cloudways API Access Token (Profile → API Integration → Access Token Details)'
+    required: true
+  api-path:
+    description: 'API path, e.g. /git/pull or /security/whitelisted'
+    required: true
+  request-method:
+    description: 'GET, POST, PUT or DELETE'
+    required: false
+    default: 'POST'
+  request-body:
+    description: |
+      Multiline key:value pairs, one per line.
+      A key ending in [] is split on commas into an array: "ip[]:a,b" sends {"ip":["a","b"]}.
+    required: false
+    default: ''
+  request-format:
+    description: 'Body encoding for non-GET requests: json (like the old action) or form'
+    required: false
+    default: 'json'
+  request-response:
+    description: |
+      Multiline path:default pairs to export to the job env.
+      Paths start at "data" (Cloudways wraps responses in "data"), e.g. "data.ip_list:[]" exports env "cw_data_ip_list".
+      Arrays (and JSON-encoded array strings) are exported comma-separated, objects as compact JSON.
+    required: false
+    default: ''
+  prefix:
+    description: 'Prefix for exported env variable names'
+    required: false
+    default: 'cw_'
+  api-version:
+    description: 'API version segment, e.g. v2 or v1'
+    required: false
+    default: 'v2'
+  api-base-url:
+    description: 'Base URL without the version segment'
+    required: false
+    default: 'https://api.cloudways.com/api'
+  wait-for-operation:
+    description: 'If the response has an operation_id, poll /operation/{id} until it completes. Needs the GET /operation/{id} token scope'
+    required: false
+    default: 'false'
+  operation-timeout:
+    description: 'Max seconds to wait for an operation'
+    required: false
+    default: '300'
+
+outputs:
+  response:
+    description: 'Raw JSON response body'
+    value: ${{ steps.call.outputs.response }}
+  operation-id:
+    description: 'Cloudways operation ID, if the endpoint returned one'
+    value: ${{ steps.call.outputs.operation-id }}
+  http-code:
+    description: 'HTTP status code of the main request'
+    value: ${{ steps.call.outputs.http-code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: call
+      shell: bash
+      run: '"${{ github.action_path }}/entrypoint.sh"'
+      env:
+        CW_TOKEN: ${{ inputs.access-token }}
+        CW_PATH: ${{ inputs.api-path }}
+        CW_METHOD: ${{ inputs.request-method }}
+        CW_BODY: ${{ inputs.request-body }}
+        CW_FORMAT: ${{ inputs.request-format }}
+        CW_RESPONSE_MAP: ${{ inputs.request-response }}
+        CW_PREFIX: ${{ inputs.prefix }}
+        CW_API_VERSION: ${{ inputs.api-version }}
+        CW_BASE_URL: ${{ inputs.api-base-url }}
+        CW_WAIT: ${{ inputs.wait-for-operation }}
+        CW_OP_TIMEOUT: ${{ inputs.operation-timeout }}
