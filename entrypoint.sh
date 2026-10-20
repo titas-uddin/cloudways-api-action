@@ -9,6 +9,10 @@ set -euo pipefail
 METHOD="$(echo "${CW_METHOD:-POST}" | tr '[:lower:]' '[:upper:]')"
 BASE="${CW_BASE_URL:-https://api.cloudways.com/api}"
 BASE="${BASE%/}/${CW_API_VERSION:-v2}"
+if [[ ! "$BASE" =~ ^https:// && ! "$BASE" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?/ ]]; then
+  echo "::error::api-base-url must start with https:// (http:// is only allowed for localhost)"
+  exit 1
+fi
 PREFIX="${CW_PREFIX:-cw_}"
 WAIT="${CW_WAIT:-false}"
 OP_TIMEOUT="${CW_OP_TIMEOUT:-300}"
@@ -17,12 +21,18 @@ GITHUB_ENV="${GITHUB_ENV:-/dev/null}"
 
 echo "::add-mask::$CW_TOKEN"
 
+TMPD="$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")"
+trap 'rm -rf "$TMPD"' EXIT
+
 trim() {
   local s="$1"
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
   printf '%s' "$s"
 }
+
+# make untrusted text safe inside a workflow command (::error:: etc.): single line, % escaped
+oneline() { tr -d '\r' | tr '\n' ' ' | sed 's/%/%25/g'; }
 
 # write a (possibly multiline) value to $GITHUB_OUTPUT / $GITHUB_ENV
 emit() { # file name value
@@ -68,20 +78,22 @@ done <<< "${CW_BODY:-}"
 [ "$FORMAT" = "json" ] && ARGS=(-H "Content-Type: application/json" --data "$JSON")
 
 # ---------- HTTP call ----------
-CODE_FILE="$(mktemp)"
+AUTH_ESC="${CW_TOKEN//\\/\\\\}"; AUTH_ESC="${AUTH_ESC//\"/\\\"}"   # escape \ and " for curl's config syntax
+CODE_FILE="$TMPD/code"
 call() { # method path [curl args...]  -> body on stdout; LVL=warning softens failures, NOBODY=1 hides bodies
   local m="$1" p="$2"; shift 2
   local lvl="${LVL:-error}" body
-  body() { [ -n "${NOBODY:-}" ] && echo "(body hidden)" || head -c 2000 "$1"; }
+  body() { [ -n "${NOBODY:-}" ] && echo "(body hidden)" || head -c 2000 "$1" | oneline; }
   local out code
-  out="$(mktemp)"
+  out="$(mktemp -p "$TMPD")"
   local extra=()
   [ "$m" = "GET" ] && extra=(-G)
-  code=$(curl -sS --retry 3 --retry-delay 3 --retry-connrefused \
+  # the Authorization header goes in via stdin (-K -), so the token never shows in the process list
+  code=$(curl -sS --retry 3 --retry-delay 3 --retry-connrefused -K - \
     -o "$out" -w '%{http_code}' -X "$m" "${extra[@]}" \
-    -H "Authorization: Bearer $CW_TOKEN" \
     -H "Accept: application/json" \
-    "$@" "$BASE$p") || { echo "::$lvl::Request failed: $m $p (network error)" >&2; return 1; }
+    "$@" "$BASE$p" <<< "header = \"Authorization: Bearer $AUTH_ESC\"") \
+    || { echo "::$lvl::Request failed: $m $p (network error)" >&2; rm -f "$out"; return 1; }
   echo "$code" > "$CODE_FILE"
   if [ "$code" -ge 400 ]; then
     case "$code" in
@@ -91,10 +103,12 @@ call() { # method path [curl args...]  -> body on stdout; LVL=warning softens fa
       *) hint="";;
     esac
     echo "::$lvl::Cloudways $m $p -> HTTP $code$hint: $(body "$out")" >&2
+    rm -f "$out"
     return 1
   fi
   if jq -e 'type == "object" and (.status == false or (.data | type == "object" and .status == false))' "$out" >/dev/null 2>&1; then
     echo "::$lvl::Cloudways $m $p returned status=false: $(body "$out")" >&2
+    rm -f "$out"
     return 1
   fi
   cat "$out"
@@ -143,8 +157,9 @@ done <<< "${CW_RESPONSE_MAP:-}"
 # /operation/{id} responses include the whole server with plaintext credentials
 # for every app on it, so only print selected fields from them.
 OP=""
-[ "$IS_JSON" = true ] && OP="$(echo "$RESP" | jq -r 'try (.operation_id // .data.operation_id // empty) catch empty')"
-echo "operation-id=$OP" >> "$GITHUB_OUTPUT"
+[ "$IS_JSON" = true ] && OP="$(echo "$RESP" | jq -r 'try (.operation_id // .data.operation_id // empty | tostring) catch empty')"
+[[ "$OP" =~ ^[A-Za-z0-9_-]{1,100}$ ]] || OP=""
+emit "$GITHUB_OUTPUT" operation-id "$OP"
 
 if [ -n "$OP" ] && [ "$WAIT" = "true" ]; then
   echo "Waiting for operation $OP (timeout ${OP_TIMEOUT}s)"
@@ -160,7 +175,7 @@ if [ -n "$OP" ] && [ "$WAIT" = "true" ]; then
       break
     fi
     if [ "$done_flag" = "-1" ]; then
-      echo "::error::Operation $OP failed: $(echo "$r" | jq -c '(.operation // .data.operation) | {id, type, status, message}')"
+      echo "::error::Operation $OP failed: $(echo "$r" | jq -c '(.operation // .data.operation) | {id, type, status, message}' | oneline)"
       exit 1
     fi
     if [ $(( $(date +%s) - start )) -ge "$OP_TIMEOUT" ]; then
