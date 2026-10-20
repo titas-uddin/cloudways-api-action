@@ -49,6 +49,10 @@ inputs:
     description: 'If the response has an operation_id, poll /operation/{id} until it completes. Needs the GET /operation/{id} token scope'
     required: false
     default: 'false'
+  busy-timeout:
+    description: 'Max seconds to keep retrying while Cloudways reports another operation in progress on the server (HTTP 422)'
+    required: false
+    default: '300'
   operation-timeout:
     description: 'Max seconds to wait for an operation'
     required: false
@@ -83,3 +87,4 @@ runs:
         CW_BASE_URL: ${{ inputs.api-base-url }}
         CW_WAIT: ${{ inputs.wait-for-operation }}
         CW_OP_TIMEOUT: ${{ inputs.operation-timeout }}
+        CW_BUSY_TIMEOUT: ${{ inputs.busy-timeout }}

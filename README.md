@@ -49,6 +49,7 @@ Use it to deploy with git pull, purge caches, reset file permissions, manage SSH
 | `api-base-url` | `https://api.cloudways.com/api` | Base URL without the version |
 | `wait-for-operation` | `false` | Wait for a background operation to finish |
 | `operation-timeout` | `300` | Maximum seconds to wait |
+| `busy-timeout` | `300` | If the server is busy with another operation (HTTP 422), keep retrying every 10 s for up to this many seconds |
 
 ## Outputs
 

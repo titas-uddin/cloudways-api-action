@@ -16,6 +16,8 @@ fi
 PREFIX="${CW_PREFIX:-cw_}"
 WAIT="${CW_WAIT:-false}"
 OP_TIMEOUT="${CW_OP_TIMEOUT:-300}"
+BUSY_TIMEOUT="${CW_BUSY_TIMEOUT:-300}"
+BUSY_RETRY_DELAY="${CW_BUSY_RETRY_DELAY:-10}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 GITHUB_ENV="${GITHUB_ENV:-/dev/null}"
 
@@ -88,12 +90,24 @@ call() { # method path [curl args...]  -> body on stdout; LVL=warning softens fa
   out="$(mktemp -p "$TMPD")"
   local extra=()
   [ "$m" = "GET" ] && extra=(-G)
-  # the Authorization header goes in via stdin (-K -), so the token never shows in the process list
-  code=$(curl -sS --retry 3 --retry-delay 3 --retry-connrefused -K - \
-    -o "$out" -w '%{http_code}' -X "$m" "${extra[@]}" \
-    -H "Accept: application/json" \
-    "$@" "$BASE$p" <<< "header = \"Authorization: Bearer $AUTH_ESC\"") \
-    || { echo "::$lvl::Request failed: $m $p (network error)" >&2; rm -f "$out"; return 1; }
+  local busy_start; busy_start=$(date +%s)
+  while :; do
+    # the Authorization header goes in via stdin (-K -), so the token never shows in the process list
+    code=$(curl -sS --retry 3 --retry-delay 3 --retry-connrefused -K - \
+      -o "$out" -w '%{http_code}' -X "$m" "${extra[@]}" \
+      -H "Accept: application/json" \
+      "$@" "$BASE$p" <<< "header = \"Authorization: Bearer $AUTH_ESC\"") \
+      || { echo "::$lvl::Request failed: $m $p (network error)" >&2; rm -f "$out"; return 1; }
+    # Cloudways runs one operation per server at a time and rejects others with 422
+    # "already in progress" (nothing is executed), so wait and retry.
+    [ "$code" = "422" ] && grep -qi 'already in progress' "$out" || break
+    if [ $(( $(date +%s) - busy_start )) -ge "$BUSY_TIMEOUT" ]; then
+      echo "::$lvl::Server still busy with another operation after ${BUSY_TIMEOUT}s" >&2
+      break
+    fi
+    echo "Server busy with another operation; retrying $m $p in ${BUSY_RETRY_DELAY}s" >&2
+    sleep "$BUSY_RETRY_DELAY"
+  done
   echo "$code" > "$CODE_FILE"
   if [ "$code" -ge 400 ]; then
     case "$code" in
